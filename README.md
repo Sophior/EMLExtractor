@@ -19,3 +19,5 @@ When choosing the "Extensions" function, it will iterate every file without exte
 
 
   
+## future plans
+If there is a need, I'll add support for mbox files. So you can export your gmail mailbox and use your data on your local machine.
