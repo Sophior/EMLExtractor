@@ -2,6 +2,7 @@
 using System.IO;
 using System.Net.Mail;
 using System.Text;
+using System.Text.RegularExpressions;
 
 #region Prompts & text
 
@@ -256,54 +257,82 @@ async Task ProcessEmail(MimeMessage message, String Destination, bool skipDuplic
 		{
 			try
 			{
-				string _fileName = ((MimeKit.MimePart)v).FileName;
-				byte[] _fileContents = null;
-
-				if (_fileName != null && _fileName.Length > 0)
+				if( v is MessagePart)
+				{
+					MessagePart part = (MessagePart)v;
+					if(part != null) // this is an attachment that is also an email
+					{
+						await ProcessEmail(part.Message, Destination, skipDuplicate);
+					}
+				}
+				else if (v is MimePart && ((MimeKit.MimePart)v).IsAttachment)
 				{
 
-					using (var ms = new MemoryStream())
+					string _fileName = ((MimeKit.MimePart)v).FileName;
+                    if (_fileName!=null && _fileName.Length>0)
+                    {
+						_fileName = SanitizeFileName(_fileName);
+					}
+					else
 					{
-						if (v is MessagePart)
-						{
-							var part = (MessagePart)v;
-							await part.Message.WriteToAsync(ms);
-						}
-						if (v is MimePart)
-						{
-							var part = (MimePart)v;
-							await part.Content.DecodeToAsync(ms);
-							_fileContents = ms.ToArray();
-						}
 
-						String _destinationPath = System.IO.Path.Combine(Destination, $"{_fileName}");
-						if (!skipDuplicate)
+					}
+
+					byte[] _fileContents = null;
+
+					if (_fileName != null && _fileName.Length > 0)
+					{
+
+						using (var ms = new MemoryStream())
 						{
-							int _rename = 0;
-							while (System.IO.File.Exists(_destinationPath))
+							if (v is MessagePart)
 							{
-								_destinationPath = System.IO.Path.Combine(Destination, $"{_rename}_{_fileName}");
-								_rename += 1;
+								var part = (MessagePart)v;
+								await part.Message.WriteToAsync(ms);
 							}
-						}
-						if (!System.IO.File.Exists(_destinationPath))
-						{
-							if (_fileContents != null)
+							if (v is MimePart)
 							{
-								Console.WriteLine($"Processing email {_fileName}");
-								using (FileStream fs = new FileStream(_destinationPath, FileMode.OpenOrCreate))
-								{
+								var part = (MimePart)v;
+								await part.Content.DecodeToAsync(ms);
+								_fileContents = ms.ToArray();
+							}
 
-									await fs.WriteAsync(_fileContents, 0, _fileContents.Length);
-									fs.Flush();
+							String _destinationPath = System.IO.Path.Combine(Destination, $"{_fileName}");
+							if (!skipDuplicate)
+							{
+								int _rename = 0;
+								while (System.IO.File.Exists(_destinationPath))
+								{
+									_destinationPath = System.IO.Path.Combine(Destination, $"{_rename}_{_fileName}");
+									_rename += 1;
 								}
 							}
-						}
-						else
-						{
-							Console.WriteLine($"skipped email {_fileName}");
+							if (!System.IO.File.Exists(_destinationPath))
+							{
+								if (_fileContents != null)
+								{
+									Console.WriteLine($"Processing email {_fileName}");
+									using (FileStream fs = new FileStream(_destinationPath, FileMode.OpenOrCreate))
+									{
+
+										await fs.WriteAsync(_fileContents, 0, _fileContents.Length);
+										fs.Flush();
+									}
+								}
+							}
+							else
+							{
+								Console.WriteLine($"skipped email {_fileName}");
+							}
 						}
 					}
+				}
+				else if (v.IsAttachment)
+				{
+				}
+				else
+				{
+					// just text 
 				}
 			}
 			catch (System.Exception e)
@@ -312,6 +341,28 @@ async Task ProcessEmail(MimeMessage message, String Destination, bool skipDuplic
 			}
 		}
 	}
+}
+string SanitizeFileName(string fileName)
+{
+	string _cleanString = "";
+	try
+	{
+		if(fileName != null && fileName.Length > 0)
+		{
+			// there can be attachmments with slashes or network paths as name. Which will throw off the destination path.
+			_cleanString = Regex.Replace(fileName, "[^a-zA-Z0-9_.]+", "_", RegexOptions.Compiled);
+		}
+		if (_cleanString.Length <= 0)
+		{
+			string _extension = fileName != null ? System.IO.Path.GetExtension(fileName) : "";
+			_cleanString = $"{DateTime.Now.ToString("yyyymmddHHmmssffff")}.{_extension}";
+		}
+	}
+	catch(System.Exception e)
+	{
+		// something went really wrong
+	}
+	return _cleanString;
 }
 #endregion
 
