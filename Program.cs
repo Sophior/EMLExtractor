@@ -1,10 +1,15 @@
 ﻿using MimeKit;
+using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Tls.Crypto;
+using System;
 using System.Data.SQLite;
 using System.IO;
 using System.Net.Mail;
+using System.Reflection.PortableExecutable;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using static System.Net.Mime.MediaTypeNames;
 
 #region Prompts & text
 
@@ -86,6 +91,7 @@ string getExtension()
 async void showMenu()
 {
     Console.WriteLine("Set [D]atabase file");
+	Console.WriteLine("[Q]uery database");
     Console.WriteLine("[E]mail");
 	Console.WriteLine("m[B]oxes");
 	Console.WriteLine("[M]ove to flat folder structure");
@@ -94,6 +100,10 @@ async void showMenu()
 	ConsoleKeyInfo _input = Console.ReadKey();
 	switch (_input.Key.ToString().ToUpper())
 	{
+		case "Q":
+			ShowSqlEmails();
+			showMenu();
+            break;
 		case "D":
 			StartCreateDatabase();
 			showMenu();
@@ -255,16 +265,34 @@ string _databasePath = "";
 async Task processStartCreateDatabase(string Path, String filename)
 {
 	string _dbPath = System.IO.Path.Combine(Path, filename);
-	// this creates a zero-byte file
-	SQLiteConnection.CreateFile(_dbPath);	
+
+	if (!System.IO.File.Exists(_dbPath))
+	{
+		// this creates a zero-byte file
+		SQLiteConnection.CreateFile(_dbPath);
+	}
 	try
 	{
 		string connectionString = $"Data Source={_dbPath};Version=3;";
 		using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
 		{
 			m_dbConnection.Open();
-			string sql = @"CREATE TABLE IF NOT EXISTS ""Email"" (
+			string sql = @"CREATE TABLE IF NOT EXISTS ""MBoxes"" (
+							""id""	INTEGER NOT NULL UNIQUE,
+							""MigrationStartDate""	datetime,
+							""MigrationEndDate""	datetime,
+							""SourcePath""	TEXT,
+							""FileName"" TEXT,
+							""IsMigrated"" BOOLEAN,
+							PRIMARY KEY(""id"" AUTOINCREMENT)
+			)";
+
+            SQLiteCommand command = new SQLiteCommand(sql, m_dbConnection);
+            command.ExecuteNonQuery();
+
+            sql = @"CREATE TABLE IF NOT EXISTS ""Emails"" (
 									""id""	INTEGER NOT NULL UNIQUE,
+									""MboxId"" INTEGER,
 									""MigrationDate""	datetime,
 									""MailDate""	datetime,
 									""Subject""	TEXT,
@@ -274,8 +302,10 @@ async Task processStartCreateDatabase(string Path, String filename)
 									""To""	TEXT,
 									""CC""	TEXT,
 									""BCC""	TEXT,
-									PRIMARY KEY(""id"" AUTOINCREMENT));";
-			SQLiteCommand command = new SQLiteCommand(sql, m_dbConnection);
+									PRIMARY KEY(""id"" AUTOINCREMENT),
+CONSTRAINT ""FK_MBOXID"" FOREIGN KEY(""MboxId"") REFERENCES ""MBoxes""(""id"")
+);";
+			 command = new SQLiteCommand(sql, m_dbConnection);
 			command.ExecuteNonQuery();
 			sql = @"CREATE TABLE IF NOT EXISTS ""Attachments"" (
 									""id""	INTEGER NOT NULL UNIQUE,
@@ -285,7 +315,7 @@ async Task processStartCreateDatabase(string Path, String filename)
 									""FileName""	TEXT,
 									""OriginalFileName""	TEXT,
 									PRIMARY KEY(""Id""),
-									CONSTRAINT ""FK_EMAILID"" FOREIGN KEY(""MailId"") REFERENCES ""Email""(""id"")
+									CONSTRAINT ""FK_EMAILID"" FOREIGN KEY(""MailId"") REFERENCES ""Emails""(""id"")
 								);";
             command = new SQLiteCommand(sql, m_dbConnection);
             command.ExecuteNonQuery();
@@ -337,28 +367,29 @@ async Task processDirectoryMails(string Path, String Destination, bool skipDupli
 	}
 	await Task.WhenAll(TaskList.ToArray());
 }
-async Task ProcessEmailFile(String FilePath, String Destination, bool skipDuplicate)
+async Task<long> ProcessEmailFile(String FilePath, String Destination, bool skipDuplicate)
 {
 	if (System.IO.File.Exists(FilePath))
 	{
 		var message = MimeMessage.Load(FilePath);
 		if (message != null)
 		{
-			await ProcessEmail(message, Destination, skipDuplicate);
+			return await ProcessEmail(message, Destination, skipDuplicate);
 		}
 	}
+	return 0;
 }
-async Task ProcessEmail(MimeMessage message, String Destination, bool skipDuplicate)
-{ 
-	if(message != null)
+async Task<long> ProcessEmail(MimeMessage message, string Destination, bool skipDuplicate)
+{
+    long _mailID = 0;
+    if (message != null)
 	{
-		long _mailID = 0;
 
         if (System.IO.Path.Exists(_databasePath))
 		{
 			_mailID = await SaveMessageToDB(_databasePath,message);
-		}
-		foreach (var v in message.BodyParts)
+        }
+        foreach (var v in message.BodyParts)
 		{
 			try
 			{
@@ -449,13 +480,16 @@ async Task ProcessEmail(MimeMessage message, String Destination, bool skipDuplic
 				Console.WriteLine($"[ERROR] : {e.Message}");
 			}
 		}
-	}
+    }
+    return _mailID;
 }
 async Task<long> SaveAttachmentToDB(String Path, long mailID, string destinationPath,string OriginalFileName, string FileName)
 {
     long RowID = 0;
     try
     {
+        Thread.Sleep(100);
+
         string connectionString = $"Data Source={Path};Version=3;";
         using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
         {
@@ -480,16 +514,101 @@ async Task<long> SaveAttachmentToDB(String Path, long mailID, string destination
     }
     return RowID;
 }
+async Task ShowSqlEmails()
+{
+
+	if (_databasePath != null && _databasePath.Length > 0)
+	{
+
+		try
+		{
+			Thread.Sleep(100);
+
+			string connectionString = $"Data Source={_databasePath};Version=3;";
+			using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
+			{
+				m_dbConnection.Open();
+				string sql = $@"SELECT e.MailDate, e.Subject, count(a.id) 'Attachments' FROM EMAILS e
+join Attachments a on a.MailId = e.Id
+join MBoxes m on e.MboxId = m.Id
+GROUP BY e.MailDate, E.Subject
+        order by MailDate desc, Subject asc,m.FileName asc";
+				SQLiteCommand cmd = new SQLiteCommand(sql, m_dbConnection);
+				cmd.CommandText = sql;
+				using (SQLiteDataReader reader = cmd.ExecuteReader())
+				{
+					bool _hasHeader = false;
+					while (reader != null && reader.Read())
+					{
+						if (!_hasHeader)
+						{
+							foreach (var v in reader.GetValues())
+							{
+								Console.Write(v.ToString() + "|");
+							}
+							_hasHeader = true;
+						}
+						for(int c=0;c< reader.FieldCount;c++)
+						{
+							Console.Write(reader.GetValue(c).ToString() + "|");
+                        }
+						Console.WriteLine();
+					}
+				}
+
+				m_dbConnection.Close();
+			}
+		}
+		catch (System.Exception ex)
+		{
+			Console.WriteLine($"[ERROR] {ex.Message}");
+		}
+	}
+	else
+	{
+		Console.Write("NO database path set");
+	}
+}
+
+async Task SaveEmailMboxId(string DbPath, long EmailId, long MboxId)
+{
+    try
+    {
+        Thread.Sleep(100);
+
+
+        string connectionString = $"Data Source={DbPath};Version=3;";
+        using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
+        {
+            m_dbConnection.Open();
+            string sql = $@"UPDATE Emails SET MboxID =@mboxid WHERE id=@mailid;";
+            SQLiteCommand cmd = new SQLiteCommand(sql, m_dbConnection);
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("@mboxid", MboxId);
+            cmd.Parameters.AddWithValue("@mailid", EmailId);
+			cmd.ExecuteNonQuery();
+            m_dbConnection.Close();
+        }
+    }
+    catch (System.Exception ex)
+    {
+        Console.WriteLine($"[ERROR] {ex.Message}");
+    }
+
+}
 async Task<long> SaveMessageToDB(String Path, MimeMessage message)
 {
 	long RowID = 0;
     try
     {
+        Thread.Sleep(100);
+
+
         string connectionString = $"Data Source={Path};Version=3;";
         using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
         {
 			m_dbConnection.Open();
-			string sql = $@"INSERT INTO Email ('MigrationDate', 'MailDate', 'Subject', 'HtmlBody', 'TextBody', 'from', 'To', 'CC', 'BCC')
+			string sql = $@"INSERT INTO Emails ('MigrationDate', 'MailDate', 'Subject', 'HtmlBody', 'TextBody', 'from', 'To', 'CC', 'BCC')
 						VALUES (@migrationdate, @maildate, @subject, @htmlbody, @textbody, @mailfrom, @mailto,@mailcc, @mailbcc) RETURNING id;";
             SQLiteCommand cmd = new SQLiteCommand(sql, m_dbConnection);
             cmd.CommandText = sql;
@@ -512,6 +631,60 @@ async Task<long> SaveMessageToDB(String Path, MimeMessage message)
         Console.WriteLine($"[ERROR] {ex.Message}");
     }
 	return RowID;
+}
+async Task SaveMboxSetEndtime(String DBPath, long MboxId, DateTime EndTime)
+{
+
+    try
+    {
+        string connectionString = $"Data Source={DBPath};Version=3;";
+        using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
+        {
+            m_dbConnection.Open();
+			string sql = $@"UPDATE MBoxes SET 'IsMigrated'=@ismigrated,'MigrationendDate'=@migrationenddate WHERE id=@mboxid";
+            SQLiteCommand cmd = new SQLiteCommand(sql, m_dbConnection);
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("@mboxid", MboxId);
+            cmd.Parameters.AddWithValue("@migrationenddate", EndTime);
+            cmd.Parameters.AddWithValue("@ismigrated", true);
+
+			cmd.ExecuteNonQuery();
+            m_dbConnection.Close();
+        }
+    }
+    catch (System.Exception ex)
+    {
+        Console.WriteLine($"[ERROR] {ex.Message}");
+    }
+}
+async Task<long> SaveMbox(string DBPath, string Path, string FileName, DateTime StartTime)
+{
+    long RowID = 0;
+    try
+    {
+        string connectionString = $"Data Source={DBPath};Version=3;";
+        using (SQLiteConnection m_dbConnection = new SQLiteConnection(connectionString))
+        {
+            m_dbConnection.Open();
+            string sql = $@"INSERT INTO MBoxes ('MigrationStartDate', 'SourcePath', 'FileName', 'IsMigrated')
+						VALUES (@migrationdate, @sourcepath, @filename, @ismigrated) RETURNING id;";
+            SQLiteCommand cmd = new SQLiteCommand(sql, m_dbConnection);
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("@migrationdate", StartTime);
+//            cmd.Parameters.AddWithValue("@migrationenddate", EndTime);
+            cmd.Parameters.AddWithValue("@sourcepath", Path);
+            cmd.Parameters.AddWithValue("@filename", FileName);
+			cmd.Parameters.AddWithValue("@ismigrated", false);
+
+            RowID = (long)cmd.ExecuteScalar();
+            m_dbConnection.Close();
+        }
+    }
+    catch (System.Exception ex)
+    {
+        Console.WriteLine($"[ERROR] {ex.Message}");
+    }
+    return RowID;
 }
 string SanitizeFileName(string fileName)
 {
@@ -544,7 +717,7 @@ async Task StartMboxes()
 	string _destination = getDestinationFolder();
 
 	Console.WriteLine($"Going from {_target} to {_destination}");
-	processDirectoryMboxes(_target, _destination, true);
+	await processDirectoryMboxes(_target, _destination, true);
 
 }
 async Task processDirectoryMboxes(string Path, String Destination, bool skipDuplicate)
@@ -557,7 +730,10 @@ async Task processDirectoryMboxes(string Path, String Destination, bool skipDupl
 		{
 			if (f.EndsWith(".mbox"))
 			{
-				var LastTask = Task.Run(async () => await ProcessMboxFile(f, Destination, skipDuplicate));
+				var LastTask = Task.Run(async () =>
+				{
+                    await ProcessMboxFile(f, Destination, skipDuplicate);
+                });
 				TaskList.Add(LastTask);
 			}
 		}
@@ -576,20 +752,30 @@ async Task ProcessMboxFile(string FilePath, string DestionationPath, bool skipDu
 {
 	if (System.IO.File.Exists(FilePath))
 	{
-		using (System.IO.FileStream fs = new FileStream(FilePath, FileMode.Open))
-		{
+        long _mboxId = await SaveMbox(_databasePath, DestionationPath, System.IO.Path.GetFileName(FilePath), DateTime.Now);
 
+        using (System.IO.FileStream fs = new FileStream(FilePath, FileMode.Open))
+		{
 			var parser = new MimeParser(fs, MimeFormat.Mbox);
 			while (!parser.IsEndOfStream)
 			{
 				MimeMessage _mboxMessage = parser.ParseMessage();
 				if (_mboxMessage != null)
 				{
-					await ProcessEmail(_mboxMessage, DestionationPath, skipDuplicate);
-				}
-			}
+                    long _emailId = await ProcessEmail(_mboxMessage, DestionationPath, skipDuplicate);
+
+					if (_emailId > 0)
+					{
+						if(_mboxId>0)
+						{
+                            await SaveEmailMboxId(_databasePath, _emailId, _mboxId);
+                        }
+                    }
+                }
+            }
 		}
-	}
+		await SaveMboxSetEndtime(_databasePath, _mboxId, DateTime.Now);
+    }
 }
 #endregion
 
