@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="MimeKit" Version="4.2.0" />
+    <PackageReference Include="System.Data.SQLite.Core" Version="1.0.118" />
   </ItemGroup>
 
 </Project>
