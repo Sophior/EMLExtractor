@@ -8,6 +8,8 @@ This is a small utility that solved 3 problems for me:
 * Handling extensionless files in the resulting files
 * Not being able to read mbox files from Google takeout
 
+When choosing the option "Database", it will create a sqlite database file and write the email details and paths to the extracted attachments into the sqlite database.
+
 When choosing the option "Email", it will iterate the folder (and subfolders), read the eml file and extract the attachments into the destination folder.
 As I've noticed that there are many duplicates, from conversation threads, it will not override existing files with the same name. Unless you alter the function StartEmail(true) to StartEmail(false).
 (it would be more ideal to compare the bytesize, but for my purpose it's not been necessary)
